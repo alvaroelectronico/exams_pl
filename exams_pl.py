@@ -14,7 +14,7 @@ def get_all_info(c, b, A, B):
     cB = c[pos_var_basicas]
     invB = np.linalg.inv(B)
     piB = np.dot(cB.T, invB)
-    pB = np.dot(pi, A)
+    pB = np.dot(piB, A)
     uB = np.dot(invB, b)
     xB = [0 for i in range(A.shape[1])]
     for i, val in enumerate(uB):
@@ -32,3 +32,5 @@ constraints = ['3x_1 + 1x_2  <= 30',
 model = Simplex(num_vars=2, constraints=constraints, objective_function=objective)
 
 cB, uB, pB, piB, xB, invB = get_all_info(model.c, model.b, model.A, model.all_bases[0])
+
+print(model.model_tex)
