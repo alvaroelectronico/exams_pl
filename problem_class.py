@@ -3,13 +3,15 @@ from fractions import Fraction
 from collections import namedtuple
 import numpy as np
 import six
+from pyperclip import *
+
 
 FORM_VB = "V^B = c-c^BB^{-1}A"
 FORM_piB = "\pi^B = c^BB^{-1}"
 FORM_pB = "p^B = B^{-1}A"
 
 BasicSolution = namedtuple(
-    "basic_solution", ["B", "cB", "uB", "pB", "piB", "xB", "z", "invB", "VB", "cB_f1", "p1B_f1", "vB_f1", "z_f1"]
+    "basic_solution", ["B", "cB", "uB", "pB", "piB", "xB", "z", "invB", "vB", "cB_f1", "p1B_f1", "vB_f1", "z_f1"]
 )
 
 
@@ -22,66 +24,165 @@ class LP_Problem():
         self.c2 = self.model.c2.astype('float')
         self.b = self.model.b.astype('float')
         self.A = self.model.A.astype('float')
+        self.var_names = self.model.var_names
         self.num_vars = self.model.num_vars
         self.num_s_vars = self.model.num_s_vars
         self.num_r_vars = self.model.num_r_vars
+        self.num_total_vars = self.num_vars + self.num_s_vars + self.num_r_vars
         self.bases_info = dict()  # a dictionary with a BasicSolution named tuple for every element in bases
         self.model.solve_model()
-        self.bases = self.model.all_bases
+        self.simplex_bases = self.model.all_bases
+        self.simplex_first_feasible_base = self.model.first_feasible_base
         self.gen_all_bases_info()
+        self.sense = self.model.objective
+        self.objective_function = self.model.objective_function
+        self.constraints = self.model.constraints
 
     def gen_base_info(self, basic_vars_id):
-        base = self.A[:, basic_vars_id]
-        c2_b = self.c2[basic_vars_id]
-        base_inv = np.linalg.inv(base)
-        pi2_b = np.dot(c2_b.T, base_inv)
-        p_b = np.dot(base_inv, self.A)
-        u_b = np.dot(base_inv, self.b)
-        x_b = [0 for i in range(self.A.shape[1])]
-        for i, val in enumerate(u_b):
-            x_b[basic_vars_id[i]] = val[0]
-        v2_b = self.c2.T - np.dot(c2_b.T, p_b)
+        B = self.A[:, basic_vars_id]
+        cB = self.c2[basic_vars_id]
+        invB = np.linalg.inv(B)
+        piB = np.dot(cB.T, invB)
+        pB = np.dot(invB, self.A)
+        uB = np.dot(invB, self.b)
+        xB = [0 for i in range(self.A.shape[1])]
+        for i, val in enumerate(uB):
+            xB[basic_vars_id[i]] = val[0]
+        vB = self.c2.T - np.dot(cB.T, pB)
 
-        c1_b = self.c1[basic_vars_id]
-        pi1_b = np.dot(c1_b.T, base_inv)
-        v1_b = self.c1.T - np.dot(c1_b.T, p_b)
+        cB_f1 = self.c1[basic_vars_id]
+        piB_f1 = np.dot(cB_f1.T, invB)
+        vB_f1 = self.c1.T - np.dot(cB_f1.T, pB)
 
-        z1 = np.dot(self.c1.T, x_b)
-        z2 = np.dot(self.c2.T, x_b)
+        z_f1 = np.dot(self.c1.T, xB)
+        z = np.dot(self.c2.T, xB)
 
-        self.bases_info[tuple(basic_vars_id)] = BasicSolution(base, c2_b, u_b, p_b, pi2_b, x_b, z2, base_inv, \
-                                                              v2_b, c1_b, pi1_b, v1_b, z1)
+        # "basic_solution", ["B", "cB", "uB", "pB", "piB", "xB", "z", "invB", "vB", "cB_f1", "p1B_f1", "vB_f1", "z_f1"]
 
-        self.bases_info[tuple(basic_vars_id)] = basic_solution_to_fraction(self.bases_info[tuple(basic_vars_id)])
+        base_info = BasicSolution(B, cB, uB, pB, piB, xB, z, invB, vB, cB_f1, piB_f1, vB_f1, z_f1)
+
+        base_info = basic_solution_to_fraction(base_info)
+        return base_info
+        # self.bases_info[tuple(basic_vars_id)] = BasicSolution(base, c2_b, u_b, p_b, pi2_b, x_b, z2, base_inv, \
+        #                                                       v2_b, c1_b, pi1_b, v1_b, z1)
+        #
+        # self.bases_info[tuple(basic_vars_id)] = basic_solution_to_fraction(self.bases_info[tuple(basic_vars_id)])
 
     def gen_all_bases_info(self):
-        for basic_vars_id in self.bases:
-            self.gen_base_info(basic_vars_id)
+        for basic_vars_id in self.simplex_bases:
+            self.bases_info[tuple(basic_vars_id)] = self.gen_base_info(basic_vars_id)
 
-    def tableau_tex(self, basic_vars_id):
-        base_info = self.bases_info[tuple(basic_vars_id)]
+    def tableau_basic_sol_tex(self, basic_vars_id):
+        base_info = self.gen_base_info(basic_vars_id)
         str = ""
-        # Line 0. Phase 1
-        str += "Phase 1 & {}".format(-base_info.z_f1)
+
+        # OF and reduced costs for phase 1 if they apply (there are artifitial variables or it is the first
+        # feasible base for the second phase).
+        artificial_variables_exist = len([i for i in basic_vars_id if i >= self.num_vars + self.num_s_vars]) > 0
+        is_fist_feasible_sol_phase2 = set(basic_vars_id) == set(self.simplex_first_feasible_base)
+        if artificial_variables_exist or is_fist_feasible_sol_phase2:
+            str += "Phase 1 & {} ".format(fraction_to_tex(-base_info.z_f1[0]))
+            for i in base_info.vB_f1[0]:
+                str += "& {} ".format(fraction_to_tex(i))
+            str += "\\\\ \n"
+
+        # OF and reduced costs for phase 2
+        str += "Phase 2 & {} ".format(fraction_to_tex(-base_info.z[0]))
+        for i in base_info.vB[0]:
+            str += "& {} ".format(i)
+        str += "\\\\ \n"
+
+        # Horizontal line to seprate reduced cost from the rest of the table
+        str += "\hline\n"
+
+        # Rows for subtitution rates
+        for i in range(0, self.A.shape[0]):
+            str += "${}$".format(self.var_names[basic_vars_id[i]])
+            str += " & {} ".format(base_info.uB[i][0])
+            for j in range(0, self.num_total_vars):
+                str += " & {}".format(base_info.pB[i][j])
+            str += "\\\\ \n"
+        str += "\hline\n"
         return str
 
-        # for i, row in enumerate(self.coeff_matrix):
-        #     if i == 1:
-        #         str += "\hline\n"
-        #     if i != 0:
-        #         str += "${}$".format(self.var_names[self.basic_vars[i]])
-        #     if i == 0:
-        #         str += " & {}".format(-row[len(row) - 1])
-        #     else:
-        #         str += " & {}".format(row[len(row) - 1])
-        #     for j in range(0, len(row) - 1):
-        #         if i == 0:
-        #             str += " & {}".format(-row[j])
-        #         else:
-        #             str += " & {}".format(row[j])
-        #     str += "\\\\ \n"
-        # str += "\hline\n"
-        # return str.3.
+    def tableau_tex_header(self):
+        str = "\\begin{center}\n\\begin{tabular}{c|c|"
+        str += "c" * self.num_total_vars
+        str += "|}\n"
+        str += " & $z$"
+        for i in range(self.num_total_vars):
+            str += " & ${}$".format(self.var_names[i])
+        str += "\\\\ \n"
+        return str
+
+    def tableau_tex_wrap(self):
+        return "\end{tabular}\n\end{center}\n"
+
+    def compose_tableau(self, basic_solutions):
+        str = self.tableau_tex_header()
+        for base in basic_solutions:
+            str += self.tableau_basic_sol_tex(base)
+        str += self.tableau_tex_wrap()
+        return str
+
+    def formulation_tex(self):
+        tex_str = "\\begin{equation}\n\\begin{split}\n"
+        if 'min' in self.sense.lower():
+            tex_str += "\mbox{min. } z = " + self.objective_function + "\\\\\n"
+        else:
+            tex_str += "\mbox{max. } z = " + self.objective_function + "\\\\\n"
+        tex_str += "s.a.:\\\\\n"
+        char_to_replace = {'<=': '\\leq',
+                           '>=': '\\geq'}
+        for expression in self.constraints:
+            # Iterate over all key-value pairs in dictionary
+            for key, value in char_to_replace.items():
+                # Replace key character with value character in string
+                expression = expression.replace(key, value)
+            tex_str += expression + "\\\\\n"
+        for i in range(1, self.num_vars + 1):
+            tex_str += "x_{}".format(i)
+            if i != self.num_vars:
+                tex_str += ",\\,\\,"
+        tex_str += "\geq 0\\\\\n"
+        tex_str += "\\end{split}\n\\end{equation}"
+        return tex_str
+
+    def formulation_phase1_tex(self):
+        tex_str = "\\begin{equation}\n\\begin{split}\n"
+
+        tex_str += "\mbox{max. } z' = "
+        for i, j in enumerate(self.c1):
+            if j[0] < 0:
+                tex_str += fraction_to_tex(array_to_fraction(j)[0]) + self.var_names[i]
+            elif j[0] > 0 and i > 0:
+                tex_str += " + " + fraction_to_tex(array_to_fraction(j)[0]) + self.var_names[i]
+        tex_str += "\\\\\n"
+        tex_str += "s.a.:\\\\\n"
+        non_neg_tr = ""
+        A, b = arrays_to_fraction([self.A, self.b])
+        for i in range(self.A.shape[0]):
+            for j in range(self.A.shape[1]):
+                if A[i][j] > 0 and j > 0:
+                    tex_str += "+"
+                if A[i][j] != 0:
+                    tex_str += fraction_to_tex(A[i][j]) + self.var_names[j]
+            tex_str += " = " + fraction_to_tex(b[i][0])
+            tex_str += "\\\\\n"
+        tex_str += ",\,".join(self.var_names) + "\\geq 0"
+
+        tex_str += "\\end{split}\n\\end{equation}"
+
+        return tex_str
+
+    # def compose_tableaux(self, first_tableau=0, last_tableau=float('inf')):
+    #     last_tableau = min(len(self.tableaux_list), last_tableau)
+    #     first_tableau = max(0, min(first_tableau, last_tableau - 1))
+    #     str = self.tableau_tex_header()
+    #     for i in range(first_tableau, last_tableau):
+    #         str += self.tableaux_list[i]
+    #     str += self.tableau_tex_wrap()
+    #     return str
 
 
 def array_to_fraction(arr):
@@ -111,12 +212,14 @@ def basic_solution_to_fraction(basic_sol):
                                    arrays_to_fraction(basic_sol)[12])
     return basic_sol_frac
 
-
-def fraction_to_tex(frac):
+def fraction_to_tex(frac, use_dolar=False):
     if frac.denominator == 1 or frac.denominator == 0:
-        str = "{}".format(frac.numerator)
+        str = "{:.0f}".format(frac.numerator)
     else:
-        str = "\\frac{{{}}}{{{}}}".format(frac.numerator, frac.denominator)
+        if use_dolar:
+            str = "$\\frac{{{}}}{{{}}}$".format(frac.numerator, frac.denominator)
+        else:
+            str = "\\frac{{{}}}{{{}}}".format(frac.numerator, frac.denominator)
     return str
 
 
@@ -125,8 +228,20 @@ def matrix_to_tex(m, brackets="round"):
         str = "\\begin{pmatrix}\n"
     for r in range(m.shape[0]):
         for c in range(m.shape[1] - 1):
-            str += "{} & ".format(fraction_to_tex(m[r, c]))
-        str += format(fraction_to_tex(m[r, m.shape[1] - 1]))
+            element = m[r, c]
+            if isinstance(element, Fraction):
+                str += "{} & ".format(fraction_to_tex(element, use_dolar=False))
+            elif int(element) == element:
+                str += "{:.0f} & ".format(element)
+            else:
+                str += "{} & ".format(element)
+        element = m[r, m.shape[1] - 1]
+        if isinstance(element, Fraction):
+            str += "{}".format(fraction_to_tex(m[r, m.shape[1] - 1], use_dolar=False))
+        elif int(element) == element:
+            str += "{:.0f}".format(m[r, m.shape[1] - 1])
+        else:
+            str += "{}".format(element)
         str += "\\\\\n"
     if brackets == "round":
         str += "\\end{pmatrix}\n"
@@ -152,163 +267,20 @@ def create_equation(content_str):
     return str
 
 
-# objective = ("max", "80x_1 + 45x_2 + 95x_3")
-# constraints = [
-#     "2x_1 + 1x_2 + 2.5x_3 <= 100",
-#     "1x_1 + 0.5x_2 + 1x_3 = 30",
-#     "1x_1 + 0x_2 + 1x_3 >= 8"
-# ]
-# modelA = Simplex(num_vars=3, constraints=constraints, objective_function=objective)
-# problemA = LP_Problem(modelA.c1, modelA.c2, modelA.b, modelA.A, modelA.num_vars, modelA.num_s_vars, modelA.num_r_vars)
-# problemA.bases = modelA.all_bases
-# problemA.gen_all_bases_info()
-# print(modelA.compose_tableaux())
-# solutionA = problemA.bases_info[tuple(problemA.bases[len(problemA.bases) - 1])]
-#
-# objectiveB = ("max", "70x_1 + 80x_2 + 40x_3")
-# constraintsB = [
-#     "4x_1 + 8x_2 + 6x_3 <= 400",
-#     "1x_1 + 1x_2 + 0.5x_3 = 90",
-#     "1x_1 + 1x_2 + 1x_3 >= 20",
-# ]
-# modelB = Simplex(num_vars=3, constraints=constraintsB, objective_function=objectiveB)
-# problemB = LP_Problem(modelB.c1, modelB.c2, modelB.b, modelB.A, modelB.num_vars,
-#                       modelB.num_s_vars, modelB.num_r_vars)
-# problemB.bases = modelB.all_bases
-# problemB.gen_all_bases_info()
-# print(modelB.compose_tableaux())
-# solutionB = problemB.bases_info[tuple(problemB.bases[len(problemB.bases) - 1])]
-#
-# problems = [problemA, problemB]
-# solutions = [solutionA, solutionB]
-# models = [modelA, modelB]
-#
-# no_model = 0
-#
-# solution_txt = solutions[no_model]
-# problem_txt = problems[no_model]
-# model_txt = models[no_model]
-#
-#
-# # Base of optima solution
-# base = solution_txt.B
-# base_inv = solution_txt.invB
-#
-# # Tex for B and B-1
-# text = "B = "
-# text += matrix_to_tex(array_to_fraction(base))
-# text += "\,\, B^{-1} = "
-# text += matrix_to_tex(array_to_fraction(base_inv))
-# print(text)
-#
-# # Shadow prices
-# piB_tex = FORM_piB + " = "
-# piB_tex += operations_to_tex([[array_to_fraction(solution_txt.cB.T)], [array_to_fraction(base_inv), " = "],
-#                               [array_to_fraction(solution_txt.piB)]])
-# print("")
-# print(piB_tex)
-#
-# # V^B_3
-#
-#
-# # New variable
-#
-# c_4 = [np.array(85).reshape(-1, 1),
-#        np.array(80).reshape(-1, 1)]
-# a_4 = [np.array([1, 1, 0]).reshape(-1, 1),
-#         np.array([2, 1, 0]).reshape(-1, 1)]
-#
-# no_model = 1
-# solution_txt = solutions[no_model]
-# problem_txt = problems[no_model]
-# model_txt = models[no_model]
-# c_4_txt = c_4[no_model]
-# a_4_txt = a_4[no_model]
-#
-# v_b_4_txt = c_4_txt - np.dot(np.dot(solution_txt.cB.T, solution_txt.invB), a_4_txt)
-# c_4f = array_to_fraction(c_4_txt)
-# a_4f = array_to_fraction(a_4_txt)
-# v_b_4f = array_to_fraction(v_b_4_txt)
-# c_bf = array_to_fraction(solution_txt.cB)
-# base_invf = array_to_fraction(solution_txt.invB)
-#
-# # A
-# text = "A = "
-# text += matrix_to_tex(a_4f)
-# print(text)
-#
-# # VB
-# text = "V^B_4 = c_4-c^BB^{-1}A_4 = "
-# text += operations_to_tex([[c_4f, " - "], [c_bf.T], [base_invf], [a_4f]])
-# text += " = "
-# text += fraction_to_tex(v_b_4f[0, 0])
-# print(text)
-#
-#
-#
-#
-#
-#
-#
-#
-#
-#
-#
-#
-#
-# """
-# Code to be part of a class
-# """
-#
-# base, c2_b, u_b, p_b, pi2_b, x_b, base_inv, v2_b, c1_b, pi1_b, v1_b = all_basic_solutions[-1]
-# c2, c1, A, b = modelA.c2, modelA.c1, modelA.A, modelA.b
-#
-# VB_tex = FORM_VB + " = "
-# VB_tex += operations_to_tex([[c2.T, "-"], [c2_b.T], [base_inv], [A, " = "], [v2_b]])
-# print(VB_tex)
-#
-# piB_tex = FORM_piB + " = "
-# piB_tex += operations_to_tex([[problemA.c2.T], [base_inv, " = "], [pi2_b]])
-# print("")
-# print(piB_tex)
-#
-# pB_tex = FORM_pB + " = "
-# pB_tex += operations_to_tex([[base_inv], [A, " = "], [p_b]])
-# print("")
-# print(pB_tex)
-#
-# """
-# Specific code (sandbox)
-# """
-# b2 = np.copy(b)
-# b2[2][0] = Fraction(11).limit_denominator()
-# b
-# b2
-#
-# np.dot(base_inv, b2)
-#
-# ub2 = array_to_fraction(np.dot(base_inv, b2))
-#
-# str = operations_to_tex([["u^B = "], [base_inv], [b2, "="], [ub2]])
-# str = create_equation(str)
-# print(str)
-#
-# pB3 = p_b[:, 2].reshape(-1, 1)
-# str = operations_to_tex([["p^B_3 = "], [pB3]])
-# str = create_equation(str)
-# print(str)
-#
-# objective3 = ("max", "80x_1 + 45x_2 + 95x_3")
-# constraints3 = [
-#     "2x_1 + 1x_2 + 2.5x_3 <= 100",
-#     "1x_1 + 0.5x_2 + 1x_3 >= 40",
-#     "1x_1 + 0x_2 + 1x_3 >= 10",
-#     "1x_1 + 1x_2 + 0x_3 <= 80"
-# ]
-# model3 = Simplex(num_vars=3, constraints=constraints3, objective_function=objective3)
-#
-# model3.compose_tableaux()
-#
-# model3.tableaux_list
-#
-# print(model3.tableaux_list[4])
+if __name__ == "__main__":
+    objective = ("max", "3x_1 + 2x_2 + 1x_3 + 2x_4")
+    constraints = [
+        "1x_1 + 3x_2 + 0x_3 = 60",
+    "2x_1 + 1x_2 + 3x_3 + 1x_4 <= 10",
+    "2x_1 + 1x_2 + 1x_3 -5x4 >= 50"
+
+]
+    problem = LP_Problem(num_vars=4, objective_function=objective, constraints=constraints)
+
+    copy(problem.formulation_tex())
+    copy(problem.formulation_phase1_tex())
+
+    tableau = problem.compose_tableau(problem.simplex_bases)
+    copy(tableau)
+
+    print("finished")
